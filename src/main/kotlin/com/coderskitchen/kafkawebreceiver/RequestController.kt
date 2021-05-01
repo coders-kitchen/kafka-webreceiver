@@ -1,37 +1,54 @@
 package com.coderskitchen.kafkawebreceiver
 
 import org.springframework.cloud.circuitbreaker.resilience4j.ReactiveResilience4JCircuitBreakerFactory
-import org.springframework.cloud.client.circuitbreaker.ReactiveCircuitBreakerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.kafka.core.KafkaTemplate
-import org.springframework.retry.annotation.CircuitBreaker
-import org.springframework.util.concurrent.FailureCallback
-import org.springframework.util.concurrent.SuccessCallback
-import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.ResponseBody
-import org.springframework.web.bind.annotation.RestController
+import org.springframework.kafka.support.SendResult
+import org.springframework.vault.core.VaultOperations
+import org.springframework.vault.support.Plaintext
+import org.springframework.web.bind.annotation.*
 import reactor.core.publisher.Mono
-import java.util.concurrent.CompletableFuture
-import kotlin.random.Random
+import java.util.*
 
 
 @RestController()
 @RequestMapping("/message")
-class RequestController(val kafkaTemplate: KafkaTemplate<Int, String>, val reactiveCircuitBreaker: ReactiveResilience4JCircuitBreakerFactory) {
+class RequestController(val kafkaTemplate: KafkaTemplate<Int, String>,
+                        val reactiveCircuitBreaker: ReactiveResilience4JCircuitBreakerFactory,
+                        val vaultOperations: VaultOperations) {
 
     @PostMapping
     @ResponseBody
-    fun messageMe(): Mono<ResponseEntity<String>> {
-        val randomString = Random.nextInt().toString()
+    fun messageMe(@RequestBody() body: String): Mono<ResponseEntity<String>> {
+        val oft = vaultOperations.opsForTransit()
+        val mono = Mono.just(Plaintext.of(body) )
+            .map { oft.encrypt("orders", it).ciphertext }
+            .flatMap { Mono.fromFuture { kafkaTemplate.send("test-topic2", it).completable() } }
 
 
-        val mono = Mono.fromFuture { kafkaTemplate.send("test-topic", randomString).completable() }
-
-        return reactiveCircuitBreaker
-            .create("kafka")
-            .run(mono.map { ResponseEntity.ok(randomString) })
-            .onErrorResume { Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(it.javaClass.toString() + " " +it.message)) }
+        return submitToKafka(mono)
     }
+
+    private fun submitToKafka(mono: Mono<SendResult<Int, String>>) =
+        reactiveCircuitBreaker
+            .create("kafka")
+            .run(mono.map { ResponseEntity.ok(UUID.randomUUID().toString()) })
+            .doOnError { it.printStackTrace() }
+            .onErrorResume {
+                Mono.just(
+                    ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(it.javaClass.toString() + " " + it.message)
+                )
+            }
+
+    @PostMapping(path = ["/unencrypted"])
+    @ResponseBody
+    fun messageMeUncrypted(@RequestBody() body: String): Mono<ResponseEntity<String>> {
+        val mono: Mono<SendResult<Int, String>> = Mono.fromFuture { kafkaTemplate.send("test-topic2", body).completable() }
+
+
+        return submitToKafka(mono)
+    }
+
 }

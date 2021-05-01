@@ -1,0 +1,11 @@
+spring.cloud.vault:
+    host: 192.168.0.3
+    port: 8200
+    scheme: http
+    uri: http://192.168.0.3:8200
+    connection-timeout: 5000
+    read-timeout: 15000
+    authentication: TOKEN
+    token: <Client Token>
+    reactive:
+      enabled: false
